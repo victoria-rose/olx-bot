@@ -1,0 +1,11 @@
+.venv/
+.env
+.olx-profile/
+__pycache__/
+*.pyc
+# Live OLX session (your login). NEVER commit.
+.session.json
+# Runtime deal log (your prices). NEVER commit.
+deals.json
+# Resume state (answered threads). NEVER commit.
+state.json
