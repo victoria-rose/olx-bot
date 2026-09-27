@@ -16,6 +16,14 @@ from openai import BadRequestError, OpenAI
 
 from config import Config
 from olx_adapter import Message
+_client_cache: tuple[str, OpenAI] | None = None
+
+
+def _get_client(api_key: str) -> OpenAI:
+    global _client_cache
+    if _client_cache is None or _client_cache[0] != api_key:
+        _client_cache = (api_key, OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key))
+    return _client_cache[1]
 
 SCAM_RE = re.compile(
     r"(payment link|advance.*(payment|pay|deposit|link)|qr ?code.*scan|"
@@ -98,7 +106,8 @@ def extract_deal_price(message: object, floor: float) -> float | None:
             price = float(json.loads(getattr(fn, "arguments", "") or "{}").get("price", 0))
         except (ValueError, TypeError, AttributeError):
             continue
-        if floor <= price <= 100_000_000:
+        # Floor guard: ignore tool price below seller's minimum.
+        if price >= floor:
             return price
     return None
 
@@ -108,12 +117,13 @@ def draft_reply(cfg: Config, history: list[Message]) -> tuple[str, float | None]
 
     Scam pressure gets the canned refusal, not the model.
     """
-    latest = next((m.text for m in reversed(history) if m.sender == "buyer"), "")
-    if latest and SCAM_RE.search(latest):
+    recent_buyer = [m.text for m in history if m.sender == "buyer"][-5:]
+    if any(SCAM_RE.search(t) for t in recent_buyer):
         return DEFLECT, None
+    latest = recent_buyer[-1] if recent_buyer else ""
     if not cfg.openrouter_api_key:
         return "(offline preview — set OPENROUTER_API_KEY) " + (latest or "..."), None
-    client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=cfg.openrouter_api_key)
+    client = _get_client(cfg.openrouter_api_key)
     messages = [{"role": "system", "content": system_prompt(cfg)}, *to_chat(history)]
     try:
         first = client.chat.completions.create(

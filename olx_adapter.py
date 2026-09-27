@@ -32,6 +32,7 @@ from __future__ import annotations
 import base64
 import json
 import time
+import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass
@@ -72,7 +73,7 @@ class OlxAdapter:
         self._user_id = user_id
         self.chat_token = (chat_token or "").strip()  # `ct` cookie: XMPP password
         self._pw = None  # one Playwright browser per process (profile lock)
-
+        self._ctx = None
     # ---- HTTP layer ----
     def _call(self, path: str, data: object = None, version: str | None = None) -> object:
         body = json.dumps(data).encode() if data is not None else None
@@ -86,7 +87,7 @@ class OlxAdapter:
             with urllib.request.urlopen(req, timeout=30) as r:
                 return json.load(r)
         except urllib.error.HTTPError as e:
-            if e.code == 403:
+            if e.code in (401, 403):
                 raise TokenExpired(
                     "xchat rejected the token (403). Re-export _bifro_jwt "
                     "(devtools on any xchat request -> x-access-token) into XCHAT_TOKEN.") from e
@@ -276,8 +277,16 @@ class OlxAdapter:
                     if c["name"] in {"ct", "rt", "user", "_bifro_jwt", "lf"}
                 ]
                 if env.chat_token and not any(c["name"] == "ct" for c in jar):
+                    _host = urllib.parse.urlparse(self.base_url).hostname or ""
+                    if "." in _host:
+                        if _host.count(".") >= 2:
+                            _domain = "." + _host.split(".", 1)[1]
+                        else:
+                            _domain = "." + _host
+                    else:
+                        _domain = "." + _host if _host else ""
                     jar.append({"name": "ct", "value": env.chat_token,
-                                "domain": ".olx.in", "path": "/",
+                                "domain": _domain, "path": "/",
                                 "secure": True, "httpOnly": False, "sameSite": "Lax"})
                 if jar:
                     self._ctx.add_cookies(jar)
@@ -318,7 +327,8 @@ class OlxAdapter:
 
     def _teardown_browser(self) -> None:
         try:
-            self._browser().close()
+            if hasattr(self, '_ctx') and self._ctx is not None:
+                self._ctx.close()
         except Exception:
             pass
         try:
@@ -327,7 +337,7 @@ class OlxAdapter:
         except Exception:
             pass
         self._pw = None
-
+        self._ctx = None
     def send(self, thread_id: str, text: str, dry_run: bool = True) -> None:
         if dry_run:
             print(f"[DRY-RUN -> {thread_id}] {text}")
